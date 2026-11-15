@@ -1,365 +1,221 @@
 # TicketOps Platform
 
-Event ticketing platform on AWS EKS, provisioned with Terraform and deployed through GitHub Actions and ArgoCD, with monitoring, security policies, and blue-green releases.
+An event-ticketing application used to learn AWS infrastructure provisioning,
+container delivery, and Kubernetes operations. Terraform builds the AWS foundation;
+GitHub Actions publishes application images; ArgoCD reconciles deployment configuration.
 
-**Live:** [ticketops.apisuraj.click](http://ticketops.apisuraj.click)  
-**App code:** [github.com/Suraj8853/ticketops-platform](https://github.com/Suraj8853/ticketops-platform)  
-**K8s manifests:** [github.com/Suraj8853/ticketops-gitops](https://github.com/Suraj8853/ticketops-gitops)
+- **Application and Terraform:** [ticketops-platform](https://github.com/kishoreala/ticketops-platform)
+- **Kubernetes configuration:** [ticketops-gitops-config](https://github.com/kishoreala/ticketops-gitops-config) (private)
+- **Region:** `us-east-1`
+- **Cluster:** `ticketops-dev-cluster`, Kubernetes `1.37`
+- **Application hostname:** `ticketops.ankr9.fyi` (deployment target; not yet live)
 
----
+## Current status
+
+As of November 15, 2026:
+
+- AWS foundation provisioned, including networking, EKS, ECR, RDS, Redis, IAM, and S3.
+- Two managed EKS nodes verified `Ready`; CoreDNS, kube-proxy, and VPC CNI pods running.
+- ArgoCD installed in EKS using Helm; UI login and private GitOps repository connection verified.
+- CI settings configured and local preflight checks passed. The first cloud workflow run,
+  signed-image publication, and GitOps image-update PR still need verification.
+- Platform/application GitOps sync, end-to-end booking, ingress, DNS, monitoring,
+  autoscaling, and recovery demonstrations remain to be verified.
 
 ## Architecture
 
-![Architecture](docs/architecture/architecture.svg)
+```text
+User -> Route 53 -> public ALB -> dashboard nginx -> events-api / admin-api
+                                                     |
+                                                 PgBouncer -> RDS PostgreSQL
+                                                     |
+                                                  Redis queue
+                                                     |
+                                              bookings-worker -> S3 QR codes
 
----
+Developer -> GitHub Actions -> ECR images and signatures
+                    |
+              GitOps update PR -> review/merge -> ArgoCD -> EKS workloads
 
-## What this is
-
-TicketOps lets users browse events, select seats, and book tickets. Under the hood it's a 4-service Node.js backend on EKS, with PostgreSQL via RDS, Redis via ElastiCache, and a React dashboard.
-
-The application itself is fairly simple. The point was to build everything around it the way you'd actually do it at a company — Terraform for infra, ArgoCD for GitOps, Prometheus/Grafana for observability, Kyverno for policy enforcement, Cosign for image signing, Velero for backups, and Argo Rollouts for zero-downtime deployments.
-
-Built across 8 phases over several weeks.
-
----
-
-## How it's structured
-
-```
-Users → Route53 (ticketops.apisuraj.click)
-           → ALB
-               → /api/events  → events-api  → pgbouncer → RDS PostgreSQL
-               → /api/admin   → admin-api   → pgbouncer
-               → /            → dashboard (React)
-
-bookings-worker → Redis (async job processing)
-seat-lock-expiry CronJob → Redis (releases expired locks every minute)
-db-migrate Job (PreSync) → RDS (schema migrations before each deploy)
+AWS Secrets Manager -> External Secrets Operator -> Kubernetes Secrets
+Terraform -> private, versioned S3 state with native locking
 ```
 
-The deployment targets us-east-1 (N. Virginia). EKS cluster is `ticketops-dev-cluster`, t3.large nodes.
+The ALB routes to the dashboard service; nginx proxies API requests to the backend
+services. Nodes and databases use private subnets. The booking worker processes
+queued bookings; email delivery additionally requires SES configuration.
 
----
+| Service | Purpose |
+| --- | --- |
+| `events-api` | Event browsing, seat availability, and booking requests |
+| `admin-api` | Admin authentication, event management, and booking administration |
+| `dashboard` | React frontend served by nginx on container port 8080 |
+| `bookings-worker` | Asynchronous booking processing and QR-code upload |
 
-## Tech used
+Kubernetes also defines a database migration Job and a seat-lock cleanup CronJob.
+The events API uses an Argo Rollouts blue-green strategy with manual promotion.
 
-**Infrastructure:** Terraform (10 reusable modules), remote state in S3 with S3 native state locking (`use_lockfile = true`, Terraform >= 1.10). Create the state bucket separately and configure its name in `terraform/envs/dev/backend.tf` before initialization. The deployment identity needs `s3:GetObject`, `s3:PutObject`, and `s3:DeleteObject` on the lock object (`dev/terraform.tfstate.tflock`), in addition to state access permissions. No DynamoDB table is required.
+## Repository responsibilities
 
-**Kubernetes:** EKS v1.35, ArgoCD App of Apps, Argo Rollouts, External Secrets Operator, AWS Load Balancer Controller, Cluster Autoscaler, metrics-server
+```text
+ticketops-platform/
+├── apps/                  Four application services and Dockerfiles
+├── terraform/envs/dev/    Environment inputs, backend, and module calls
+├── terraform/modules/     Reusable AWS infrastructure modules
+├── .github/workflows/     Build, scan, release, sign, and GitOps-update automation
+├── scripts/               Release and image-update helpers
+├── tests/                 Automation regression tests
+└── docs/                  Setup, operational notes, and verification evidence
+```
 
-**Observability:** Prometheus (kube-prometheus-stack), Grafana, Loki, Fluent Bit, Alertmanager → Slack
+The separate GitOps repository contains `bootstrap/` for the initial ArgoCD Helm
+installation, `apps/` for ArgoCD Application definitions, and `manifests/` for
+Kubernetes workloads. A root Application creates child Applications that install
+Helm-based platform components and the plain-YAML application workloads.
 
-**Security:** Kyverno (5 policies, Enforce mode), Cosign (keyless signing), Trivy (CI scanning), NetworkPolicy (default deny-all), RBAC (per-service ServiceAccounts)
+**Bootstrap order:** Terraform creates EKS, Helm installs ArgoCD, and ArgoCD then
+manages controllers and application resources from Git. Namespace/CRD/secret
+prerequisites are ordered before dependent workloads using sync waves.
 
-**CI/CD:** GitHub Actions, OIDC auth (no static AWS credentials), semantic versioning, ECR, Velero, k6
+## AWS infrastructure and design choices
 
----
+| Area | Development configuration |
+| --- | --- |
+| Networking | `10.0.0.0/16` VPC; three public and three private `/24` subnets; one NAT gateway; ECR interface endpoints and an S3 gateway endpoint |
+| EKS | Kubernetes 1.37; initially two `t3.large` nodes; node-group limits 1-6 |
+| Database | Private Single-AZ RDS PostgreSQL 15, `db.t3.micro`, 20 GB |
+| Cache/queue | Single ElastiCache Redis node, `cache.t3.micro` |
+| Images | Four ECR repositories with scan-on-push and lifecycle policies |
+| Storage | Account-specific S3 buckets for QR codes and Kubernetes-resource backups |
+| State | Separately created S3 backend, versioning, encryption, public-access blocking, `use_lockfile = true`; no DynamoDB lock table |
+| AWS authentication | Temporary local role credentials; GitHub OIDC for CI; separate IRSA roles for AWS-integrated Kubernetes components |
+| Credentials | RDS-managed master password in Secrets Manager; separate application/JWT/Grafana secrets; External Secrets delivers values to Kubernetes |
 
-## The services
+The GitHub OIDC provider already exists at account level and is read using a
+Terraform `data` block. TicketOps manages its own CI role, whose trust is limited
+to this repository's `main` branch and supports legacy and immutable-ID subjects.
 
-**events-api** — handles event listing and seat availability. Uses Redis to cache responses (60s TTL). When a user selects a seat, Redis SETNX creates a time-limited lock so two people can't book the same seat. Deployed as an Argo Rollout (Blue-Green). HPA scales it 2→10 pods on CPU.
+Terraform values flow through:
 
-**admin-api** — event management and booking administration, JWT auth. Standard Deployment. HPA min=2 max=5.
+```text
+terraform.tfvars -> root variables.tf -> root main.tf module arguments
+                -> child module variables.tf -> resource definitions
+```
 
-**dashboard** — React frontend served by nginx-unprivileged (port 8080, non-root). Standard Deployment.
+For example, `cluster_version = "1.37"` is passed into the EKS module and used by
+its cluster resource. The node group follows that cluster version.
 
-**bookings-worker** — processes bookings async from a Redis queue. Standard Deployment.
+## Deployment workflow
 
-**seat-lock-expiry** — CronJob that runs every minute and clears expired Redis seat locks. Prevents seats getting permanently stuck if a user abandons checkout.
+1. **Prepare account prerequisites.** Configure a non-root deployment identity,
+   temporary AWS access, the S3 state bucket, the public Route 53 hosted zone,
+   and the existing/shared GitHub OIDC provider. Adjust account/repository/domain
+   inputs when adapting this lab to another account.
+2. **Review and apply the AWS foundation.** Supply the ignored local
+   `terraform.tfvars` and sensitive inputs, then initialize, validate, plan, and apply.
+   Terraform 1.10+ is required for S3 native locking; this setup used 1.17.2.
+3. **Connect Kubernetes and bootstrap ArgoCD.** Use AWS CLI and kubectl compatible
+   with Kubernetes 1.37. Install the pinned ArgoCD Helm chart and values from the
+   GitOps repository. Connect the private repository using a read-only credential.
+4. **Configure and run CI.** Add `AWS_REGION`, `AWS_ROLE_ARN`, and `GITOPS_TOKEN`
+   as described in [CI setup](docs/ci-setup.md). Review changes before pushing a
+   releasable conventional commit to `main`.
+5. **Prepare GitOps values.** Populate actual Terraform outputs and an existing,
+   signed image tag using the GitOps repository's `scripts/configure.py`. Review
+   and merge the image/configuration changes before creating the root Application.
+6. **Verify controllers and application.** Check ArgoCD health, secret synchronization,
+   policies, services, ingress, and the complete booking path.
+7. **Create DNS after the ALB exists.** Initially `alb_dns_name = null` skips the
+   Terraform DNS module. Supply the actual ALB hostname, review a new plan, and
+   apply the Route 53 change. This uses conditional `count`, not a lifecycle rule.
 
-**db-migrate** — PreSync ArgoCD hook. Runs schema migrations before every deployment so the DB is always in sync. Uses `WHERE NOT EXISTS` for idempotent seeding — safe to run multiple times.
-
----
-
-## Infrastructure
-
-### VPC
-
-Standard 3-tier setup:
-- `10.0.0.0/16` VPC
-- 3 public subnets (`10.0.1-3.0/24`) — just for the ALB
-- 3 private subnets (`10.0.11-13.0/24`) — EKS nodes, RDS, ElastiCache
-- NAT Gateway + Elastic IP for outbound from private subnets
-- VPC Endpoints for ECR (api + dkr) and S3 — so Kyverno can verify image signatures without going through NAT
-
-### ECR repos
-
-4 repos: `ticketops-dev-events-api`, `ticketops-dev-bookings-worker`, `ticketops-dev-admin-api`, `ticketops-dev-dashboard`
-
-All have `scan_on_push = true`, AES256 encryption, and a lifecycle policy that keeps the last 10 images.
-
-### IAM
-
-OIDC provider for GitHub Actions — no static credentials anywhere. Each AWS-integrated K8s component (ExternalSecrets, ALB Controller, Cluster Autoscaler, Kyverno, Velero) gets its own IRSA role with least-privilege permissions.
-
----
-
-## CI/CD
-
-Push to main → semantic release determines version → builds all 4 images in parallel → Trivy scans each one → pushes to ECR → Cosign signs the image → updates image tags in ticketops-gitops → creates a PR.
-
-After the PR is merged, ArgoCD picks it up and deploys. events-api goes through Blue-Green (pauses for manual promotion). Everything else does a rolling update.
-
-The semantic versioning is commit-message driven: `feat:` bumps minor, `fix:` bumps patch. So `git commit -m "feat: add category filter"` automatically becomes `v1.22.0`.
-
----
-
-## GitOps
-
-ArgoCD uses the App of Apps pattern. A single `root-app` syncs everything from the `apps/` directory in ticketops-gitops, which in turn creates child apps for the main workloads, Argo Rollouts, Cluster Autoscaler, ALB Controller, etc.
-
-Sync waves control deployment order: secrets and ExternalSecrets sync first (wave 1-2), then workloads (wave 3-4), then ingress (wave 5). This avoids race conditions where pods start before their secrets exist.
-
-The Argo Rollout has `argocd.argoproj.io/compare-options: IgnoreExtraneous` — without this, ArgoCD fights with Argo Rollouts during blue-green pause because the live state doesn't match the gitops spec.
-
----
-
-## Observability
-
-### Metrics
-
-Both events-api and admin-api expose Prometheus metrics via prom-client v15:
-
-- `http_requests_total` — broken down by method, route, status code
-- `http_request_duration_seconds` — histogram, used for P50/P95/P99
-- `booking_total` — bookings by status
-- `seats_held_total` — how many seats are currently locked in Redis
-
-Grafana SLO dashboard has 8 panels: request rate, error rate (SLO: <0.1%), P99 latency (SLO: <500ms), booking rate, seats held, heap memory, event loop lag, and an error budget panel.
-
-### Alerts
-
-5 alert rules in PrometheusRules (ticketops namespace, `release: prometheus` label so Prometheus picks them up):
-
-- `HighErrorRate` — error rate >1% for 5 minutes
-- `HighLatencyP99` — P99 >500ms for 5 minutes  
-- `PodCrashLoops` — pod restarting more than 3 times in 15 minutes
-- `HighHeapMemory` — heap above 80% of memory limit
-- `EventLoopLagHigh` — event loop lag over 100ms
-
-Alertmanager routes to Slack. The webhook URL lives in Secrets Manager and gets synced into the cluster via ExternalSecret. The Alertmanager config is set in Helm values rather than the AlertmanagerConfig CRD — the CRD automatically adds `namespace=monitoring` matchers which break cross-namespace alert routing.
-
-### Logging
-
-Fluent Bit DaemonSet collects all container logs and ships to Loki. All services emit structured JSON with a `request_id` field so you can trace a single request across multiple services in Grafana.
-
----
-
-## Security
-
-### Kyverno
-
-5 ClusterPolicies enforced in the ticketops namespace:
-
-- **require-labels** — pods need `app` and `version` labels
-- **disallow-root-containers** — `runAsNonRoot: true` required
-- **disallow-latest-tag** — tag `latest` is blocked
-- **requires-resources-limits** — CPU and memory limits required on every container
-- **verify-image-signature** — only Cosign-signed images allowed (enforced via IRSA + VPC endpoints)
-
-Started in Audit mode, fixed all violations across every workload (added securityContext, version labels, resource limits, switched dashboard from `nginx:alpine` to `nginxinc/nginx-unprivileged`), then switched to Enforce. Verified with `kubectl run test-pod --image=nginx:latest` — correctly rejected.
-
-Kyverno runs with 3 admission controller replicas. `failurePolicy: Ignore` on webhooks so a slow Kyverno doesn't block all pod creation. `autoUpdateWebhooks: false` so Kyverno doesn't keep reverting our webhook patches. Timeout extended to 30s.
-
-### Image signing
-
-Every image gets signed in CI using Cosign keyless signing — no private key stored anywhere. The signing identity is the GitHub Actions OIDC token. Signatures stored in ECR and recorded in the Rekor transparency log. Kyverno verifies signatures at pod admission using an IRSA role that can read from ECR.
-
-### Network
-
-Default deny-all NetworkPolicy in the ticketops namespace. Each service has an explicit policy allowing only the traffic it needs. No pod can talk directly to RDS — everything goes through pgbouncer-service.
-
----
-
-## Progressive Delivery
-
-Started with canary (20% → 40% → 60% → 100% with 2-minute pauses between steps). Ran 3 successful canary deployments: v1.8.0 → v1.9.0 → v1.10.0.
-
-Switched to Blue-Green on mentor requirement. Now events-api deployments create a GREEN ReplicaSet pointing to a preview service. BLUE keeps serving 100% production traffic. After testing GREEN via the preview endpoint, you manually promote:
+Typical foundation commands, from the application repository root:
 
 ```bash
-kubectl argo rollouts promote events-api -n ticketops
+export AWS_PROFILE=ticketops-terraform
+terraform -chdir=terraform/envs/dev init
+terraform -chdir=terraform/envs/dev validate
+terraform -chdir=terraform/envs/dev plan -out=ticketops.tfplan
+terraform -chdir=terraform/envs/dev apply ticketops.tfplan
+
+aws eks update-kubeconfig \
+  --name ticketops-dev-cluster \
+  --region us-east-1 \
+  --profile ticketops-terraform
+
+kubectl get nodes
+kubectl get pods -n kube-system
 ```
 
-Traffic switches to GREEN. BLUE scales down 30 seconds later.
+`ticketops-terraform` is this workstation's credential-process profile backed by
+`ticketops-deployer`; configure your own authorized profile when reproducing the lab.
+After a failed apply, fix the cause and generate a fresh plan. Successful resources
+remain in state; Terraform does not automatically roll back the entire deployment.
 
----
+## CI/CD and platform controls
 
-## Autoscaling
+CI runs automation tests and checks required settings, determines a semantic
+release version, builds four images, scans them with Trivy, pushes them to ECR,
+and signs/verifies their digests with Cosign. It then opens or updates a GitOps
+image-update PR. Reruns can reuse a release tag for the same commit.
 
-Two levels:
+Pull requests build and scan without AWS login or image publication. The CI GitOps
+write token is separate from ArgoCD's read-only repository token. No static AWS
+access keys are required. A GitOps PR merge affects the cluster only after its
+ArgoCD Application has been configured and synced.
 
-**HPA (pods)** — metrics-server collects CPU. events-api scales 2→10 at 70% CPU. admin-api scales 2→5. At 200 VUs load, events-api CPU spiked and HPA triggered scale-up automatically.
+| Component | Intended responsibility |
+| --- | --- |
+| AWS Load Balancer Controller | Create/manage the ALB from Kubernetes Ingress |
+| Cluster Autoscaler / Metrics Server | Node capacity and resource metrics for pod autoscaling |
+| External Secrets Operator | Synchronize Secrets Manager values into Kubernetes |
+| Argo Rollouts | Blue-green releases for the events API |
+| Kyverno | Four CEL workload validation policies and an image-signature validation policy |
+| Prometheus / Grafana / Alertmanager | Metrics, dashboards, and alert routing |
+| Fluent Bit / Loki | Collect and query container logs |
+| Velero | Back up Kubernetes resources to S3; volume snapshots are disabled |
 
-**Cluster Autoscaler (nodes)** — watches for Pending pods and provisions new nodes from the ASG (min=1, max=6 t3.large). Proven: created 30 test pods → cluster went from 2 to 4 nodes. After deleting pods → scaled back down to 2 over ~15 minutes.
+## Local checks and operational limits
 
----
-
-## Disaster Recovery
-
-Velero v7.2.1 with velero-plugin-for-aws. Backups go to `ticketops-dev-velero-backups` S3 bucket (versioned, AES256, public access blocked). Velero has an IRSA role for S3 and EC2 snapshot access.
-
-Manual backup created: 574 resources backed up in 3 seconds.
-
-Daily scheduled backup at 2am, 7-day retention.
-
-To restore:
-```bash
-velero restore create --from-backup ticketops-backup
-velero restore describe <restore-name>
-```
-
----
-
-## Secrets Management
-
-Everything in AWS Secrets Manager. ExternalSecrets Operator (with IRSA) syncs them into Kubernetes secrets hourly.
-
-After secrets rotation changed the DB password from plain string to JSON format, the ExternalSecret was updated to use `property: password` to extract just the password field rather than the full JSON blob.
-
-RDS password rotates automatically every 30 days via a Lambda function (`ticketops-dev-postgres-rotation`) from the AWS Serverless Application Repository. The rotation Lambda connects to RDS over SSL, runs `ALTER USER ... PASSWORD`, verifies the new credentials work, then updates Secrets Manager.
-
----
-
-## Load Testing
-
-150 events × 100 seats seeded = 15,000 seats available. k6 script ramps VUs gradually, simulating real user behavior: browse events → select seat → book → verify confirmation.
-
-| Run | VUs | Requests | Iterations | Booking Success | Booking Errors | Error Rate | P95 Latency | Thresholds |
-|---|---|---|---|---|---|---|---|---|
-| Baseline | 100 | 25,632 | — | 598 | — | — | 1.47s | ✅ All passed |
-| Stress (200 VU) | 200 | 44,646 | 16,582 | 11,482 | 1,442 | 6.95% | 3.8s | ❌ 3 failed |
-
-### 200 VU Stress Run — Detailed Results
-
-```
-booking_success:    11,482  (24.14/s)
-booking_errors:      1,442   (3.03/s)
-checks:             94.78%  (42,319 passed / 2,327 failed)
-error_rate:          6.95%  ← exceeded 5% threshold
-http_req_failed:    13.40%  ← exceeded 5% threshold
-http_req_duration:  avg=1s  p90=2.36s  p95=3.8s  max=38.52s
-iteration_duration: avg=4.27s  p90=7.38s  p95=8.6s
-```
-
-### Threshold results
-
-- ✅ `http_req_duration` p95 < 2000ms — **PASSED** (3.8s — wait, this failed — see note below)
-- ❌ `get events status 200` — 94% pass rate (863 failures)
-- ❌ `booking status 201 or 409` — 91% pass rate (1,442 failures)
-- ❌ `error_rate` < 5% — hit 6.95%
-- ❌ `http_req_failed` < 5% — hit 13.40%
-
-> **Note on P95:** P95 came in at 3.8s, which also exceeded the 2s threshold. The 200 VU run deliberately pushed past the system's comfortable operating range to find the breaking point. The baseline 100 VU run stays well within all thresholds (P95 1.47s).
-
-### What the failures revealed
-
-The RDS connection pool became the bottleneck under sustained 200 VU load. PgBouncer's `default_pool_size = 20` connections was insufficient to serve the booking throughput — connections queued up, causing timeouts on the booking endpoint specifically. The events browse endpoint (read-only, Redis-cached) held up significantly better.
-
-**No double bookings occurred** — Redis SETNX seat locking held correctly under all concurrent load. A 409 response (seat already taken) is expected behavior, not an error, and is excluded from the error rate metric.
-
-### What this means operationally
-
-For a production deployment:
-- Increase PgBouncer `default_pool_size` from 20 → 40-50
-- Upgrade RDS instance class to handle more concurrent connections
-- Add a read replica for the events browse path (currently hits RDS even though Redis caches it at the app level — cache misses under high load still hit RDS)
-- The booking write path needs connection headroom separate from the read path
-
-Results and screenshots in `docs/load-test-results/`.
-
----
-
-## Local development
+Automation checks:
 
 ```bash
-# Start everything
-cp .env.example .env
-# Fill POSTGRES_PASSWORD, JWT_SECRET, and ADMIN_PASSWORD in .env first.
-docker compose up -d
-
-# The booking flow works end to end locally
-# Browse events → select seat → book → confirm → check admin panel
+node --test tests/release-version.test.mjs
+python -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
-Multi-stage Dockerfiles for all services: `node:20` build stage → `node:20-alpine` runtime (APIs), `node:20` → `nginxinc/nginx-unprivileged` (dashboard). About 80% smaller than single-stage builds. Dashboard uses nginx-unprivileged specifically so it runs as non-root on port 8080, satisfying the Kyverno disallow-root-containers policy.
+All four images have built successfully with lockfile-based `npm ci` installs.
+The GitOps platform preflight also rendered 11 pinned charts, validated native
+and custom manifests, and tested policy allow/deny cases. These checks do not
+replace a real cloud workflow or live cluster integration test.
 
----
+This is a learning environment, not a production-readiness claim:
 
-## Deploying to AWS
+- Trivy currently reports findings without blocking release; known application
+  dependency vulnerabilities remain for review.
+- Prometheus, Grafana, and Loki use ephemeral storage for the short lab.
+- RDS is Single-AZ. Application use of its master credentials should be replaced
+  by a restricted database user when hardening the setup.
+- Password rotation requires verification that PgBouncer/application connections
+  reload credentials. SES, Slack delivery, scaling, and recovery need live validation.
+- The application has booking concurrency/retry limitations; no claim of proven
+  double-booking prevention or production reliability is made.
+- Compose supplies local dependencies, but its dashboard routing/port settings
+  still need adjustment for a local browser demo. It is not a verified full-stack shortcut.
+- The current ingress configuration uses HTTP. HTTPS/ACM is a subsequent hardening step.
 
-```bash
-# Infra
-cd terraform/envs/dev
-terraform init
-export TF_VAR_slack_webhook_url="..."
-terraform apply
+Keep `.env`, passwords/tokens, Terraform state, plan files, local variable files,
+and Terraform output dumps out of Git. Commit provider/package lockfiles.
+AWS resources remain billable while running; remove Kubernetes-created load
+balancers before tearing down the foundation, then verify cleanup in AWS.
 
-# Connect to cluster
-aws eks update-kubeconfig --name ticketops-dev-cluster --region us-east-1
+## Further notes
 
-# Sync ArgoCD
-kubectl port-forward svc/argocd-server -n argocd 8080:443
-argocd login localhost:8080 --username admin --insecure
-argocd app sync root-app
+- [CI configuration](docs/ci-setup.md)
+- [Deployment readiness and known limitations](docs/deployment-readiness.md)
+- [Pre-push checks](docs/pre-push-review.md)
+- [Runbook](docs/runbooks/runbook.md)
 
-# Deploy new version — just push with a conventional commit
-git commit -m "feat: add event filtering"
-git push origin main
-# CI handles the rest. Merge the gitops PR when ready.
-
-# After ArgoCD deploys events-api, promote the Blue-Green
-kubectl argo rollouts promote events-api -n ticketops
-```
-
----
-
-## Screenshots
-
-### Live Application
-
-![Events Page](docs/screenshots/events-page.png)
-
-### ArgoCD — All apps synced and healthy
-
-![ArgoCD](docs/screenshots/argocd-apps.png)
-
-### Blue-Green Deployment — BLUE active, GREEN in preview
-
-![Blue Green Paused](docs/screenshots/blue-green-paused.png)
-
-### Blue-Green Deployment — After promotion
-
-![Blue Green Promoted](docs/screenshots/blue-green-promoted.png)
-
-### Grafana — Request Rate during load test
-
-![Request Rate](docs/screenshots/01-request-rate.jpg)
-
-### Grafana — Full SLO Dashboard
-
-![Full Dashboard](docs/screenshots/02-full-dashboard.jpg)
-
-### Grafana — SLO Dashboard under load
-
-![Full Dashboard Under Load](docs/screenshots/02-full-dashboard.1-load.jpg)
-
-### HPA Scaling — events-api scale-up under load
-
-![HPA Scaling](docs/screenshots/03-hpa-scaling-2-to-7.jpg)
-
-### k6 — 200 VU stress test summary
-
-![k6 200 Users](docs/screenshots/04-k6-500-users-summary.png)
-
----
-
-> **Note:** The live demo environment has been decommissioned to avoid cloud costs. All functionality is documented via screenshots and the codebase is fully deployable via `terraform apply` + ArgoCD sync.
-
----
-
-## Author
-
-Suraj Pai  
-[github.com/Suraj8853](https://github.com/Suraj8853)
+Adapted from the original TicketOps work by
+[Suraj Pai](https://github.com/Suraj8853). Inherited screenshots and load-test
+artifacts are historical references, not evidence from this AWS deployment.

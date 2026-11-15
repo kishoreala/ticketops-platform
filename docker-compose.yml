@@ -68,7 +68,7 @@ services:
       REDIS_PORT: 6379
       QUEUE_NAME: bookings:queue
       AWS_REGION: us-east-1
-      AWS_S3_BUCKET: ticketops-qr-codes
+      AWS_S3_BUCKET: ${AWS_S3_BUCKET:-ticketops-qr-codes-238005915203}
       SES_FROM_EMAIL: noreply@ticketops.com
       LOG_LEVEL: info
     depends_on:

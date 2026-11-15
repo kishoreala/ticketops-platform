@@ -27,8 +27,23 @@ variable "env" {
   description = "Environment name"
   type        = string
 }
+
+variable "cluster_version" {
+  description = "Kubernetes minor version for the EKS cluster and managed nodes"
+  type        = string
+}
 variable "github_repo" {
   description = "GitHub repository name"
+  type        = string
+}
+
+variable "github_owner_id" {
+  description = "Immutable numeric GitHub owner ID used in OIDC subjects"
+  type        = string
+}
+
+variable "github_repository_id" {
+  description = "Immutable numeric GitHub application repository ID used in OIDC subjects"
   type        = string
 }
 
@@ -44,12 +59,7 @@ variable "github_org" {
 
 
 variable "db_username" {
-  description = "RDS master password"
-  type        = string
-}
-
-variable "db_password" {
-  description = "RDS master password"
+  description = "RDS master username"
   type        = string
 }
 

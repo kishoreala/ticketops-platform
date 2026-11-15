@@ -29,14 +29,29 @@ resource "aws_secretsmanager_secret_version" "admin_password" {
   secret_string = var.admin_password
 }
 
+resource "random_password" "grafana_admin" {
+  length  = 32
+  special = false
+}
+
+resource "aws_secretsmanager_secret" "grafana_admin" {
+  name                    = "${var.project}-${var.env}-grafana-admin-password"
+  recovery_window_in_days = 0
+}
+
+resource "aws_secretsmanager_secret_version" "grafana_admin" {
+  secret_id     = aws_secretsmanager_secret.grafana_admin.id
+  secret_string = random_password.grafana_admin.result
+}
+
 
 resource "aws_secretsmanager_secret" "alertmanager_slack" {
-  name = "${var.project}-${var.env}-alertmanager-slack"
+  name                    = "${var.project}-${var.env}-alertmanager-slack"
   recovery_window_in_days = 0
-   tags = {
+  tags = {
     Name = "${var.project}-${var.env}-alertmanager-slack"
   }
-  
+
 }
 
 resource "aws_secretsmanager_secret_version" "alertmanager_slack" {

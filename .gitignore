@@ -1,5 +1,6 @@
 # Node
 node_modules/
+__pycache__/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -16,9 +17,15 @@ build/
 # Terraform
 *.tfstate
 *.tfstate.backup
+*.tfstate.*
+*.tfplan
+*-plan.txt
+*-plan.ansi
 .terraform/
 *.tfvars
+*.tfvars.json
 !*.tfvars.example
+terraform-outputs.json
 
 # Logs
 *.log
@@ -37,3 +44,6 @@ Thumbs.db
 # Coverage
 coverage/
 terraform.zip
+
+# Personal interview preparation stays local
+/docs/interview-prep*

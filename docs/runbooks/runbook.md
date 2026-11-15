@@ -241,16 +241,27 @@ kubectl logs -n kyverno -l app=kyverno --tail=30 | grep -i "ecr\|signature\|veri
 
 **Check rotation status:**
 ```bash
+export DB_SECRET_ARN=$(aws rds describe-db-instances \
+  --db-instance-identifier ticketops-dev-postgres \
+  --region us-east-1 --profile ticketops-terraform \
+  --query 'DBInstances[0].MasterUserSecret.SecretArn' --output text)
+
 aws secretsmanager describe-secret \
-  --secret-id ticketops-dev-db-password \
+  --secret-id "$DB_SECRET_ARN" \
   --region us-east-1 \
-  --query 'RotationLastRotatedDate'
+  --profile ticketops-terraform \
+  --query '{RotationEnabled:RotationEnabled,LastRotatedDate:LastRotatedDate}'
 ```
 
-**Check Lambda logs:**
+**Check the RDS-managed secret status:**
 ```bash
-aws logs tail /aws/lambda/ticketops-dev-postgres-rotation --region us-east-1 --since 1h
+aws rds describe-db-instances \
+  --db-instance-identifier ticketops-dev-postgres \
+  --region us-east-1 --profile ticketops-terraform \
+  --query 'DBInstances[0].MasterUserSecret'
 ```
+The dev environment uses native RDS-managed rotation; it does not create a custom
+rotation Lambda. The ExternalSecret must use this secret ARN and `property: password`.
 
 **If rotation succeeded but pods haven't picked it up:**
 ```bash
@@ -264,19 +275,12 @@ kubectl rollout restart deployment/bookings-worker -n ticketops
 kubectl argo rollouts restart events-api -n ticketops
 ```
 
-**If rotation failed mid-way (AWSPENDING but not AWSCURRENT):**
+**Inspect secret version stages without printing credential values:**
 ```bash
-# Check secret versions
 aws secretsmanager list-secret-version-ids \
-  --secret-id ticketops-dev-db-password \
-  --region us-east-1
-
-# Get current password
-aws secretsmanager get-secret-value \
-  --secret-id ticketops-dev-db-password \
+  --secret-id "$DB_SECRET_ARN" \
   --region us-east-1 \
-  --query 'SecretString' \
-  --output text | python3 -c "import sys,json; print(json.load(sys.stdin)['password'])"
+  --profile ticketops-terraform
 ```
 
 ---

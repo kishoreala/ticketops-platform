@@ -1,5 +1,5 @@
 resource "aws_s3_bucket" "velero" {
-  bucket        = "${var.project}-${var.env}-velero-backups"
+  bucket        = var.bucket_name
   force_destroy = true
   tags = {
     Name = "${var.project}-${var.env}-velero-backups"
@@ -24,12 +24,12 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "velero" {
 }
 
 resource "aws_s3_bucket_public_access_block" "velero" {
-  bucket = aws_s3_bucket.velero.id
-  block_public_acls   = true
-  block_public_policy = true
-  ignore_public_acls  = true
+  bucket                  = aws_s3_bucket.velero.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
   restrict_public_buckets = true
-  
+
 }
 
 resource "aws_iam_role" "velero" {
@@ -40,7 +40,7 @@ resource "aws_iam_role" "velero" {
       {
         Effect = "Allow"
         Principal = {
-          Federated = data.aws_iam_openid_connect_provider.eks.arn
+          Federated = var.eks_oidc_provider_arn
         }
         Action = "sts:AssumeRoleWithWebIdentity"
         Condition = {
@@ -90,17 +90,10 @@ resource "aws_iam_role_policy" "velero" {
           "ec2:DescribeTags",
           "ec2:CreateTags"
         ]
-      Resource = "*"
-    
+        Resource = "*"
+
 
       }
     ]
   })
-}
-
-
-
-# Look up EKS OIDC provider
-data "aws_iam_openid_connect_provider" "eks" {
-  url = "https://${var.eks_oidc_issuer}"
 }

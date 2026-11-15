@@ -1,10 +1,7 @@
-resource "aws_iam_openid_connect_provider" "github" {
-  url             = "https://token.actions.githubusercontent.com"
-  client_id_list  = ["sts.amazonaws.com"]
-  thumbprint_list = ["6938fd4d98bab03faadb97b34396831e3780aea1"]
-  tags = {
-    Name = "${var.project}-${var.env}-github-oidc"
-  }
+# Shared account-level provider, created outside this project.
+# Read it without taking ownership of its tags, thumbprints, or deletion.
+data "aws_iam_openid_connect_provider" "github" {
+  arn = "arn:aws:iam::${var.aws_account_id}:oidc-provider/token.actions.githubusercontent.com"
 }
 
 resource "aws_iam_openid_connect_provider" "eks" {
@@ -31,15 +28,16 @@ resource "aws_iam_role" "github_actions" {
       {
         Effect = "Allow"
         Principal = {
-          Federated = aws_iam_openid_connect_provider.github.arn
+          Federated = data.aws_iam_openid_connect_provider.github.arn
         }
         Action = "sts:AssumeRoleWithWebIdentity"
         Condition = {
           StringEquals = {
             "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          }
-          StringLike = {
-            "token.actions.githubusercontent.com:sub" = "repo:${var.github_org}/${var.github_repo}:*"
+            "token.actions.githubusercontent.com:sub" = [
+              "repo:${var.github_org}/${var.github_repo}:ref:refs/heads/main",
+              "repo:${var.github_org}@${var.github_owner_id}/${var.github_repo}@${var.github_repository_id}:ref:refs/heads/main",
+            ]
           }
         }
       }
@@ -67,14 +65,14 @@ resource "aws_iam_role_policy" "github_actions" {
           "ecr:UploadLayerPart",
           "ecr:CompleteLayerUpload",
           "ecr:PutImage",
-          "ecr:DescribeImages" 
+          "ecr:DescribeImages"
         ]
         Resource = "arn:aws:ecr:us-east-1:${var.aws_account_id}:repository/${var.project}-${var.env}-*"
       },
       {
         Effect   = "Allow"
         Action   = ["eks:DescribeCluster"]
-        Resource = "arn:aws:eks:us-east-1:${var.aws_account_id}:cluster/${var.project}-${var.env}"
+        Resource = "arn:aws:eks:us-east-1:${var.aws_account_id}:cluster/${var.project}-${var.env}-cluster"
       }
     ]
   })
@@ -175,7 +173,10 @@ resource "aws_iam_role_policy" "external_secret" {
           "secretsmanager:DescribeSecret",
           "secretsmanager:ListSecrets"
         ]
-        Resource = "arn:aws:secretsmanager:us-east-1:${var.aws_account_id}:secret:${var.project}-*"
+        Resource = [
+          "arn:aws:secretsmanager:us-east-1:${var.aws_account_id}:secret:${var.project}-*",
+          var.db_password_secret_arn,
+        ]
       }
     ]
   })
@@ -206,48 +207,10 @@ resource "aws_iam_role" "alb_controller_role" {
   }
 }
 
-resource "aws_iam_role_policy_attachment" "alb_controller_role" {
-  role       = aws_iam_role.alb_controller_role.id
-  policy_arn = "arn:aws:iam::aws:policy/ElasticLoadBalancingFullAccess"
-}
-
 resource "aws_iam_role_policy" "alb_controller" {
-  name = "${var.project}-${var.env}-alb-controller-policy"
-  role = aws_iam_role.alb_controller_role.id
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "ec2:DescribeVpcs",
-          "ec2:DescribeSubnets",
-          "ec2:DescribeSecurityGroups",
-          "ec2:DescribeInstances",
-          "ec2:DescribeInternetGateways",
-          "ec2:DescribeAvailabilityZones",
-          "ec2:DescribeAccountAttributes",
-          "ec2:DescribeAddresses",
-          "ec2:DescribeTags",
-          "ec2:CreateSecurityGroup",
-          "ec2:CreateTags",
-          "ec2:AuthorizeSecurityGroupIngress",
-          "ec2:RevokeSecurityGroupIngress",
-          "ec2:DeleteSecurityGroup",
-          "elasticloadbalancing:*",
-          "cognito-idp:DescribeUserPoolClient",
-          "acm:ListCertificates",
-          "acm:DescribeCertificate",
-          "iam:ListServerCertificates",
-          "iam:GetServerCertificate",
-          "waf-regional:*",
-          "wafv2:*",
-          "shield:*"
-        ]
-        Resource = "*"
-      }
-    ]
-  })
+  name   = "${var.project}-${var.env}-alb-controller-policy"
+  role   = aws_iam_role.alb_controller_role.id
+  policy = file("${path.module}/policies/aws-load-balancer-controller-v3.6.3.json")
 }
 
 resource "aws_iam_role" "cluster_autoscaler" {
@@ -379,12 +342,12 @@ resource "aws_iam_role_policy" "bookings_worker" {
           "s3:GetObject",
           "s3:DeleteObject"
         ]
-        Resource = "arn:aws:s3:::${var.project}-qr-codes/*"
+        Resource = "${var.qr_codes_bucket_arn}/*"
       },
       {
         Effect   = "Allow"
         Action   = ["s3:ListBucket"]
-        Resource = "arn:aws:s3:::${var.project}-qr-codes"
+        Resource = var.qr_codes_bucket_arn
       }
     ]
   })

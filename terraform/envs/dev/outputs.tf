@@ -40,3 +40,23 @@ output "ticketops_url" {
   description = "TicketOps platform URL"
   value       = try(module.route53[0].fqdn, null)
 }
+
+output "db_password_secret_arn" {
+  description = "RDS-managed credential secret ARN for the GitOps ExternalSecret (property: password)"
+  value       = module.rds.db_password_secret_arn
+}
+
+output "qr_codes_bucket_name" {
+  description = "QR storage bucket name for the GitOps worker configuration"
+  value       = module.s3_qr_codes.bucket_name
+}
+
+output "velero_backup_bucket_name" {
+  description = "Velero backup bucket name for the GitOps Helm values"
+  value       = module.velero.velero_bucket_name
+}
+
+output "github_actions_role_arn" {
+  description = "Application CI role; configure as the repository AWS_ROLE_ARN secret"
+  value       = module.iam.github_actions_role_arn
+}

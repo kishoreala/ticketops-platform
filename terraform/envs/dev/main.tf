@@ -21,19 +21,24 @@ module "ecr" {
 }
 
 module "iam" {
-  source              = "../../modules/iam"
-  project             = var.project
-  github_repo         = var.github_repo
-  env                 = var.env
-  github_org          = var.github_org
-  aws_account_id      = var.aws_account_id
-  eks_oidc_issuer_url = module.eks.cluster_oidc_issuer_url
-  eks_oidc_issuer     = local.eks_oidc_issuer
-  eks_oidc_arn        = local.eks_oidc_arn
+  source                 = "../../modules/iam"
+  project                = var.project
+  github_repo            = var.github_repo
+  env                    = var.env
+  github_org             = var.github_org
+  github_owner_id        = var.github_owner_id
+  github_repository_id   = var.github_repository_id
+  aws_account_id         = var.aws_account_id
+  eks_oidc_issuer_url    = module.eks.cluster_oidc_issuer_url
+  eks_oidc_issuer        = local.eks_oidc_issuer
+  eks_oidc_arn           = local.eks_oidc_arn
+  db_password_secret_arn = module.rds.db_password_secret_arn
+  qr_codes_bucket_arn    = module.s3_qr_codes.bucket_arn
 }
 
 module "eks" {
   source               = "../../modules/eks"
+  cluster_version      = var.cluster_version
   project              = var.project
   eks_cluster_role_arn = module.iam.cluster_role_arn
   private_subnets_ids  = module.vpc.private_subnet_ids
@@ -54,7 +59,6 @@ module "rds" {
   project                    = var.project
   env                        = var.env
   db_username                = var.db_username
-  db_password                = var.db_password
   db_name                    = var.db_name
   db_allocated_storage       = var.db_allocated_storage
 }
@@ -77,20 +81,12 @@ module "app_secrets" {
 }
 
 module "velero" {
-  source          = "../../modules/velero"
-  env             = var.env
-  project         = var.project
-  eks_oidc_issuer = local.eks_oidc_issuer
-}
-
-module "secrets_rotation" {
-  source                = "../../modules/secrets-rotation"
-  project               = var.project
+  source                = "../../modules/velero"
   env                   = var.env
-  vpc_id                = module.vpc.vpc_id
-  private_subnet_ids    = module.vpc.private_subnet_ids
-  secret_arn            = module.rds.db_password_secret_arn
-  rds_security_group_id = tolist(module.rds.rds_security_group_id)[0]
+  project               = var.project
+  eks_oidc_issuer       = local.eks_oidc_issuer
+  eks_oidc_provider_arn = module.iam.eks_oidc_provider_arn
+  bucket_name           = "${var.project}-${var.env}-velero-backups-${var.aws_account_id}"
 }
 
 module "route53" {
@@ -105,5 +101,5 @@ module "s3_qr_codes" {
   source      = "../../modules/s3"
   project     = var.project
   env         = var.env
-  bucket_name = "qr-codes"
+  bucket_name = "qr-codes-${var.aws_account_id}"
 }

@@ -1,6 +1,6 @@
 # TicketOps Platform
 
-A production-grade event ticketing system running on AWS EKS. Built to simulate how a real SaaS company runs its infrastructure — GitOps, observability, security policies, progressive delivery, the works.
+Event ticketing platform on AWS EKS, provisioned with Terraform and deployed through GitHub Actions and ArgoCD, with monitoring, security policies, and blue-green releases.
 
 **Live:** [ticketops.apisuraj.click](http://ticketops.apisuraj.click)  
 **App code:** [github.com/Suraj8853/ticketops-platform](https://github.com/Suraj8853/ticketops-platform)  
